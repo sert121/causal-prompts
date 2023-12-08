@@ -15,7 +15,7 @@ def construct_arctic_dataset():
     """loads/constructs the arctic dataset
     as per the paper outlines it.
     Creates a ground truth graph based on the relationships
-    outlined in the paper.
+    outlined in the paper. https://www.frontiersin.org/files/Articles/642182/fdata-04-642182-HTML-r1/image_m/fdata-04-642182-g001.jpg
 
     Returns:
         causal_pair_graph (dict) :  Graph for the arctic dataset
@@ -71,6 +71,16 @@ def construct_arctic_dataset():
 
 
 def construct_prompt(option_a, option_b):
+    """
+    Constructs a prompt for the GPT-3 model to answer
+    the cause-effect relationship between two variables.
+    Args:
+        option_a (str) : First variable
+        option_b (str) : Second variable
+    Returns:
+        PROMPT (str) : Prompt for the language model
+    """
+
     PROMPT = f"""
 You are a helpful assistant to experts in artic sea ice research and atmospheric science.
 Which cause-and-effect relationship is more likely?
@@ -83,6 +93,12 @@ Let’s work this out in a step by step way to be sure that we have the right an
 
 
 def answer_query(sentence):
+    """Answers a query based on the prompt
+    Args:
+        sentence (str) : Prompt to answer
+    Returns:
+        label (str) : Label for the cause-effect relationship
+    """
     chat_completion = client.chat.completions.create(
         messages=[
             {
@@ -101,20 +117,28 @@ def answer_query(sentence):
 
 
 def extract_answer(answer):
+    """Extracts the answer from the GPT-3 response
+    Args:
+        answer (str) : GPT-3 response
+    Returns:
+        answer (str) : Answer to the cause-effect relationship
+    """
     answer = re.findall(r"<Answer>(.*?)</Answer>", answer)
     answer = answer[0]
     return answer
 
 
 def resolve_cause_effect(possible_pairs, variable_mappings):
-    """_summary_
-
+    """Resolves the cause-effect relationship between
+    two variables
     Args:
-        possible_pairs
-        variable_mappings
+        possible_pairs (list) : List of possible pairs
+        variable_mappings (dict) : Mapping from variable name to description
+    Returns:
+        final_graph (dict) : Graph of the cause-effect relationships
     """
     final_graph = {key: [] for key in variable_mappings.keys()}
-    for pair in tqdm(possible_pairs[:2]):
+    for pair in tqdm(possible_pairs[:]):
         option_a, option_b = pair
         A, B = variable_mappings[option_a], variable_mappings[option_b]
         prompt = construct_prompt(A, B)
@@ -127,8 +151,12 @@ def resolve_cause_effect(possible_pairs, variable_mappings):
             option_b
         ].append(option_a)
 
+    return final_graph
+
 
 def run_pipeline():
+    """Runs the pipeline for the arctic dataset
+    """
     _, variable_mappings, nodes = construct_arctic_dataset()
     possible_pairs = generate_pairs(nodes)
     resolve_cause_effect(possible_pairs, variable_mappings)
