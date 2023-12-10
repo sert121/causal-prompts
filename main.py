@@ -5,11 +5,21 @@ import glob
 import re, time
 from openai import OpenAI
 from tqdm import tqdm
-
+from sklearn.metrics import accuracy_score
 from helpers import generate_pairs
-
+import json
 dotenv.load_dotenv()
 
+
+
+def save_dict_to_json(dictionary, filename):
+    with open(filename, 'w') as f:
+        json.dump(dictionary, f)
+
+def read_json(filename):
+    with open(filename, 'r') as f:
+        data = json.load(f)
+    return data
 
 def construct_arctic_dataset():
     """loads/constructs the arctic dataset
@@ -62,8 +72,8 @@ def construct_arctic_dataset():
         "SLP": ["RH", "GH", "Sea_ice", "HFLX", "u10m", "v10m"],
         "u10m": ["Sea_ice", "HFLX"],
         "v10m": ["Sea_ice", "HFLX"],
-        "Sea_ice": ["SW", "u10", "SLP", "v10" "HFLX"],
-        "HFLX": ["CW", "CC", "u10", "v10", "SLP", "Precip", "Sea_ice"],
+        "Sea_ice": ["SW", "u10m", "SLP", "v10m","HFLX"],
+        "HFLX": ["CW", "CC", "u10m", "v10m", "SLP", "Precip", "Sea_ice"],
         "Precip": ["CW", "CC", "Sea_ice", "RH", "HFLX", "LW"],
     }
 
@@ -128,38 +138,132 @@ def extract_answer(answer):
     return answer
 
 
-def resolve_cause_effect(possible_pairs, variable_mappings):
+def resolve_cause_effect(possible_pairs, variable_mappings, causal_pair_graph):
     """Resolves the cause-effect relationship between
     two variables
     Args:
         possible_pairs (list) : List of possible pairs
         variable_mappings (dict) : Mapping from variable name to description
+        causal_pair_graph (dict) : Graph for the arctic dataset
     Returns:
         final_graph (dict) : Graph of the cause-effect relationships
     """
     final_graph = {key: [] for key in variable_mappings.keys()}
+    # calculate the answer for each pair
+    pair_wise_answers = {}
+    ground_truth = []
     for pair in tqdm(possible_pairs[:]):
+        option_a, option_b = pair
+        if option_b in causal_pair_graph[option_a]:
+            ground_truth.append("A")
+        elif option_a in causal_pair_graph[option_b]:
+            ground_truth.append("B")
+        else:
+            ground_truth.append("None")
+            
+    predicted_labels = []
+
+    # generated_answers = {}
+    for pair in tqdm(possible_pairs[:]):
+        error_indexes = []
         option_a, option_b = pair
         A, B = variable_mappings[option_a], variable_mappings[option_b]
         prompt = construct_prompt(A, B)
         answer = answer_query(prompt)
-        print(answer)
-        true_val = extract_answer(answer)
-        if true_val == "C":
-            continue
-        final_graph[option_a].append(option_b) if true_val == "A" else final_graph[
-            option_b
-        ].append(option_a)
+        pair_wise_answers[f"{pair}"] = answer
 
+        # save in a json file
+        
+
+        time.sleep(1)
+        print(answer)
+        
+        try:
+            true_val = extract_answer(answer)
+        except Exception as e:
+            pair_wise_answers[f"{pair}"] = answer
+            print(f"Error in extracting answer from pair {pair}", e)
+            error_indexes.append(pair)
+
+            # true_val = "C"
+        if true_val == "C":
+            predicted_labels.append("None")
+            continue
+        elif true_val == "A":
+            predicted_labels.append("A")
+            final_graph[option_a].append(option_b)
+        elif true_val == "B":
+            predicted_labels.append("B")
+            final_graph[option_b].append(option_a)
+        else:    
+            predicted_labels.append("NA")
+
+    try:
+        print(accuracy_score(np.array(ground_truth), np.array(predicted_labels)))
+    except Exception as e:
+        print("Accuracy could not be calculated", e)
+    save_dict_to_json(pair_wise_answers, "pair_wise_answers.json")
+    save_dict_to_json(final_graph, "generated_answers.json")
     return final_graph
 
 
 def run_pipeline():
     """Runs the pipeline for the arctic dataset
     """
-    _, variable_mappings, nodes = construct_arctic_dataset()
+    causal_pair_graph, variable_mappings, nodes = construct_arctic_dataset()
     possible_pairs = generate_pairs(nodes)
-    resolve_cause_effect(possible_pairs, variable_mappings)
+    generated_graph = resolve_cause_effect(possible_pairs, variable_mappings,causal_pair_graph)
+
+def normalized_hamming_distance(prediction, target):
+  '''
+  prediction and target are edge lists
+  calculate the normalized hamming distance
+
+  For a graph with m nodes, the distance is given by ∑m i,j=1 1 m2 1Gij 6=G′ ij , 
+  the number of edges that are present in one graph but not the other, 
+  divided by the total number of all possible edges.
+  '''
+  prediction = set(prediction)
+  target = set(target)
+  total_nodes = set()
+  for i,j in target:
+    total_nodes.add(i)
+    total_nodes.add(j)
+  no_overlap = len(prediction.union(target)) - len(prediction.intersection(target))
+  return no_overlap / (len(total_nodes) ** 2)
+
+def eval_pipeline():
+    generated_graph = read_json("generated_answers.json")
+    og_graph ,_,nodes = construct_arctic_dataset()
+    possible_pairs = generate_pairs(nodes)
+    generated_pairs = []
+    original_pairs = []
+    for pair in possible_pairs:
+        option_a,option_b = pair
+        if option_b in generated_graph[option_a]:
+            generated_pairs.append((option_a, option_b))
+        elif option_a in generated_graph[option_b]:
+            generated_pairs.append((option_b, option_a))
+    
+    for pair in possible_pairs:
+        option_a,option_b = pair
+        if option_b in og_graph[option_a]:
+            original_pairs.append((option_a, option_b))
+        elif option_a in og_graph[option_b]:
+            original_pairs.append((option_b, option_a))
+    correct = 0
+    for i in original_pairs:
+        if i in generated_pairs:
+            correct+=1        
+
+    distance = normalized_hamming_distance(generated_pairs, original_pairs)
+    print("Normalized Hamming Distance: ", distance)
+
+    precision = correct/len(generated_pairs)
+    recall = correct/len(original_pairs)
+    accuracy_score = correct/len(original_pairs)
+    print("Precision: ", precision)
+    print("Recall: ", recall)
 
 
 if __name__ == "__main__":
@@ -170,4 +274,6 @@ if __name__ == "__main__":
         # defaults to os.environ.get("OPENAI_API_KEY")
         api_key=api_key,
     )
+
     run_pipeline()
+    # eval_pipeline()
